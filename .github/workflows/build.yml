@@ -1,0 +1,30 @@
+name: build-exe
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build exe
+        run: |
+          pip install pyinstaller
+          pyinstaller --onefile --windowed --name LolDraft --add-data "model.json;." --add-data "model_config.json;." live.py
+          Compress-Archive -Path dist/LolDraft.exe -DestinationPath dist/LolDraft.zip
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest dist/LolDraft.exe dist/LolDraft.zip --title "최신 버전" --notes "LolDraft.exe를 받아서 더블클릭하세요. exe가 막히면 LolDraft.zip을 받아 압축을 풀고 실행하세요."
