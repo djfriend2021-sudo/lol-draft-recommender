@@ -20,6 +20,8 @@ ROLE_ALIASES = {
     "서폿": 4, "서포터": 4, "서폿터": 4, "sup": 4, "support": 4,
 }
 EMPTY = {"-", "?", "x", "_", "없음", "모름"}
+APPLY_OFFROLE = False  # 비주류 라인 보정 사용 여부 (보류 중: 원인 확인 전까지 끔)
+OFFROLE_SHARE = 0.2   # 챔피언 전체 판수 중 이 라인 비율이 이보다 낮으면 '비주류 라인 픽'
 MIN_GAMES = 500       # 그 라인에서 이 판수 미만인 챔피언은 추천하지 않음 (model_config.json의 "min_games"로 변경)
 COUNTER_SHARE = 0.01  # '카운터 당하면' 계산에 쓰는 상대 후보: 그 라인 픽률 1% 이상인 챔피언
 TEAM_SAMPLES = 40     # 모르는 칸이 있을 때 팀 조합 점수를 평균 내는 표본 수
@@ -117,6 +119,7 @@ class Model:
     def expected_pairs(self, us, them, taken):
         """모르는 칸은 그 라인 픽률대로 나올 거라고 보고 평균 낸 점수 (챔피언·상성·듀오)."""
         base = self.pair_terms(us, them)
+        total = base
         for side, team in (("us", us), ("them", them)):
             for r in range(5):
                 if team[r] is not None:
@@ -127,9 +130,9 @@ class Model:
                     t = list(team)
                     t[r] = c
                     full = self.pair_terms(t, them) if side == "us" else self.pair_terms(us, t)
-                    exp += p * (full - base)
-                base += exp
-        return base
+                    exp += p * (full - base)   # 정해진 칸 기준으로 이 칸 하나가 더하는 값
+                total += exp                   # (예전엔 base에 누적해서 앞 칸들 값이 지워지는 버그가 있었음)
+        return total
 
     # ---------- 팀 조합 (AD/AP, 앞라인, CC, 이니시 ...)
     def profile(self, team):
@@ -243,6 +246,67 @@ class Model:
         return out
 
     # ---------- 추천
+    def role_share(self, role, c):
+        """챔피언 c의 전체 판수 중 이 라인 비율 (낮으면 비주류 라인 픽)."""
+        tot = sum(self.games.get(k, {}).get(c, 0) for k in range(5))
+        return self.games.get(role, {}).get(c, 0) / tot if tot else 0.0
+
+    def offrole_delta(self, role, c):
+        """비주류 라인 픽 보정 (로짓): 라인 비율 20% 미만이면 그 라인 강함을 비율만큼 0 쪽으로 줄임.
+        그 라인에서 그 챔피언을 하는 사람이 주로 장인(또는 장난픽)이라 생기는 효과를 나에게 추천할 땐 빼기 위함.
+        검증된 값이 아니라 보수적인 어림값."""
+        s = self.role_share(role, c)
+        if not APPLY_OFFROLE or s >= OFFROLE_SHARE:
+            return 0.0
+        return -(1 - s / OFFROLE_SHARE) * self.champ.get((role, c), 0.0)
+
+    def assign_roles_dist(self, enemy_ids, fixed=None, k=6, mass=0.97):
+        """상대 라인 배치 후보들과 확률 [(라인별 5칸, 확률)]. 확률 = 라인별 픽률 곱에 비례."""
+        fixed = fixed or [None] * 5
+        enemy_ids = list(enemy_ids)[:5]
+        free_roles = [r for r in range(5) if fixed[r] is None]
+        if not enemy_ids:
+            return [(list(fixed), 1.0)]
+        scored = []
+        for roles in itertools.permutations(free_roles, len(enemy_ids)):
+            sc = 0.0
+            for c, r in zip(enemy_ids, roles):
+                share = self.games.get(r, {}).get(c, 0) / max(1, self.role_total.get(r, 1))
+                sc += math.log(share + 1e-5)
+            scored.append((sc, roles))
+        scored.sort(key=lambda x: -x[0])
+        top = scored[0][0]
+        ws = [math.exp(s - top) for s, _ in scored]
+        z = sum(ws)
+        out, acc = [], 0.0
+        for (s, roles), w in zip(scored, ws):
+            p = w / z
+            t = list(fixed)
+            for c, r in zip(enemy_ids, roles):
+                t[r] = c
+            out.append((t, p))
+            acc += p
+            if len(out) >= k or acc >= mass:
+                break
+        tot = sum(p for _, p in out)
+        return [(t, p / tot) for t, p in out]
+
+    def ban_suggestions(self, my_role, taken, top=5):
+        """밴 추천: 상대가 고를 확률(라인별 픽률) × 그 라인에서의 강함이 큰 챔피언. [(챔피언, 라인, 강함 %p, 위협 점수)]"""
+        best = {}
+        for r in range(5):
+            tot = max(1, self.role_total.get(r, 1))
+            for c, n in self.games.get(r, {}).items():
+                if c in taken or n < self.min_games:
+                    continue
+                w = self.champ.get((r, c), 0.0) + self.offrole_delta(r, c)
+                if w <= 0:
+                    continue
+                score = (n / tot) * w * (1.5 if r == my_role else 1.0)  # 내 맞라인 상대는 더 중요
+                if score > best.get(c, (None, None, None, 0))[3]:
+                    best[c] = (c, r, round(25 * w, 1), score)
+        return sorted(best.values(), key=lambda x: -x[3])[:top]
+
     def recommend(self, my_role, allies, enemies, bans=(), top=10):
         taken = {c for c in list(allies) + list(enemies) + list(bans) if c is not None}
         cands = {c: n for c, n in self.games.get(my_role, {}).items()
@@ -255,7 +319,8 @@ class Model:
             us[my_role] = c
             pairs = self.expected_pairs(us, enemies, taken | {c})
             team = self.expected_team(us, enemies, taken | {c})
-            exp = pairs + team
+            off = self.offrole_delta(my_role, c)
+            exp = pairs + team + off
             # 카운터 위험: 상대가 남은 라인에 '내 챔피언과의 상성'이 가장 나쁜 챔피언을 고를 때,
             # 그 라인의 평균적인 픽보다 얼마나 더 손해인지 (내 픽에만 해당하는 손해)
             worst_delta, worst_by = 0.0, None
@@ -268,6 +333,7 @@ class Model:
                     if v - avg < worst_delta:
                         worst_delta, worst_by = v - avg, (r, e)
             rows.append({"champ": c, "win": sigmoid(exp), "worst": sigmoid(exp + worst_delta), "worst_by": worst_by,
+                         "offrole": round(25 * off, 1) if off else 0.0, "share": self.role_share(my_role, c),
                          "games": self.games[my_role].get(c, 0), "parts": self.breakdown(us, enemies, my_role),
                          "team": team})
         if rows:
@@ -275,7 +341,7 @@ class Model:
             for r in rows:
                 r["parts"].append(round(25 * (r["team"] - avg_team), 1))  # 다른 후보 평균 대비 조합 기여
         rows.sort(key=lambda x: -x["win"])
-        return rows[:top]
+        return rows if top is None else rows[:top]
 
 
 # ---------------------------------------------------------------- 대화형 화면

@@ -303,7 +303,7 @@ def run_gui(m, demo):
     label(head, "LoL Draft", 17, TEXT, True).pack(side="left")
     label(head, "  밴픽 추천기", 11, SUB).pack(side="left", pady=(6, 0))
     meta = m.meta
-    label(head, f"패치 {' · '.join(meta['patches'])}   |   {meta['matches']:,}판 학습", 9, DIM).pack(side="right", pady=(6, 0))
+    label(head, f"패치 {' · '.join(meta['patches'])}   |   {meta['matches']:,}판 학습", 9, SUB).pack(side="right", pady=(6, 0))
 
     status_bar = tk.Frame(root, bg=PANEL, highlightthickness=1, highlightbackground=LINE)
     status_bar.pack(fill="x", padx=18, pady=(4, 10))
@@ -456,6 +456,32 @@ def run_gui(m, demo):
         a = Avatar(ban_bar, 24, 5)
         a.pack(side="left", padx=2)
         ban_icons.append(a)
+    sugg = tk.Frame(ban_bar, bg=BG)
+    sugg_items = []
+    label(sugg, "밴 추천", 9, GOLD, True).pack(side="left", padx=(0, 6))
+    for _ in range(5):
+        it = tk.Frame(sugg, bg=BG)
+        sa = Avatar(it, 24, 5)
+        sa.pack(side="left")
+        sl = label(it, "", 8, SUB)
+        sl.pack(side="left", padx=(4, 10))
+        sugg_items.append((it, sa, sl))
+
+    def draw_bans_suggest(items):
+        if not items:
+            sugg.pack_forget()
+            return
+        if not sugg.winfo_ismapped():
+            sugg.pack(side="right")
+        for i, (it, sa, sl) in enumerate(sugg_items):
+            if i < len(items):
+                c, r, pp, _ = items[i]
+                sa.set(c, ring=GOLD)
+                sl.configure(text=f"{m.names.get(c, c)} {ROLE_KO[r]} +{pp:.1f}")
+                if not it.winfo_ismapped():
+                    it.pack(side="left")
+            else:
+                it.pack_forget()
 
     # ---------- 추천 목록
     rec = tk.Frame(body, bg=PANEL, highlightthickness=1, highlightbackground=LINE)
@@ -466,6 +492,26 @@ def run_gui(m, demo):
     rec_title.pack(side="left")
     rec_sub = label(rh, "", 9, SUB)
     rec_sub.pack(side="left", padx=10)
+    mine_var = tk.BooleanVar(value=False)
+    mine_btn = tk.Label(rh, font=F(8, True), padx=8, pady=3, cursor="hand2")
+    mine_btn.pack(side="right")
+
+    def paint_mine():
+        on = mine_var.get()
+        mine_btn.configure(text="내 챔프만 ON" if on else "내 챔프만 OFF", bg=GOLD if on else PANEL2,
+                           fg="#1a1405" if on else SUB)
+
+    def toggle_mine(_=None):
+        if not mastery:
+            mine_btn.configure(text="숙련도 정보 없음 (클라이언트 필요)")
+            return
+        mine_var.set(not mine_var.get())
+        paint_mine()
+        state["key"] = None                     # 다시 계산
+
+    mine_btn.bind("<Button-1>", toggle_mine)
+    mastery = {}                                # 챔피언 -> 숙련도 점수 (롤 클라이언트에서)
+    MINE_POINTS = 10000
 
     COLS = (36, 196, 190, 180, 200)   # 순위, 챔피언, 예상 승률, 카운터 당하면, 기여 (픽셀)
     RH = 40
@@ -480,27 +526,30 @@ def run_gui(m, demo):
     hdr.pack(fill="x", padx=14)
     for t, w in zip(("#", "챔피언", "예상 승률", "카운터 당하면", "기여 %p  챔피언 · 시너지 · 상성 · 조합"), COLS):
         label(col(hdr, w, 20), t, 8, DIM, True, anchor="w").pack(anchor="w")
-    tk.Frame(rec, bg=LINE, height=1).pack(fill="x", padx=14, pady=(4, 0))
+    hdr_line = tk.Frame(rec, bg=LINE, height=1)
+    hdr_line.pack(fill="x", padx=14, pady=(4, 0))
 
-    rec_rows = []
-    for i in range(10):
-        f = tk.Frame(rec, bg=PANEL)
-        f.pack(fill="x", padx=14)
-        rank = label(col(f, COLS[0]), str(i + 1), 11, SUB, True, anchor="w")
+    def make_row(parent, bg, rank_text):
+        f = tk.Frame(parent, bg=bg)
+        rank = label(col(f, COLS[0]), rank_text, 11, SUB, True, anchor="w")
         rank.pack(anchor="w", pady=10)
         cell = col(f, COLS[1])
         av = Avatar(cell, 32, 4)
         av.pack(side="left", pady=5)
-        nb = tk.Frame(cell, bg=PANEL)
+        nb = tk.Frame(cell, bg=bg)
         nb.pack(side="left", padx=10)
-        nm = label(nb, "", 10, TEXT, True, anchor="w")
-        nm.pack(anchor="w")
+        nl = tk.Frame(nb, bg=bg)
+        nl.pack(anchor="w")
+        nm = label(nl, "", 10, TEXT, True, anchor="w")
+        nm.pack(side="left")
+        tg = label(nl, "", 7, GOLD, True)
+        tg.pack(side="left", padx=(5, 0))
         gm = label(nb, "", 8, DIM, anchor="w")
         gm.pack(anchor="w")
         wc = col(f, COLS[2])
         win = label(wc, "", 12, TEXT, True, anchor="w")
         win.pack(anchor="w", pady=(3, 0))
-        bar = tk.Canvas(wc, width=150, height=5, bg=PANEL, highlightthickness=0)
+        bar = tk.Canvas(wc, width=150, height=5, bg=bg, highlightthickness=0)
         bar.pack(anchor="w")
         cc = col(f, COLS[3])
         worst = label(cc, "", 10, TEXT, False, anchor="w")
@@ -513,10 +562,21 @@ def run_gui(m, demo):
             c = label(chips, "", 9, SUB, True, width=5, anchor="w")
             c.pack(side="left", pady=10)
             chip_l.append(c)
-        line = tk.Frame(rec, bg=PANEL2, height=1)
-        line.pack(fill="x", padx=14)
-        rec_rows.append(dict(frame=f, line=line, rank=rank, av=av, nm=nm, gm=gm, win=win, bar=bar,
-                             worst=worst, wby=wby, chips=chip_l))
+        return dict(frame=f, rank=rank, av=av, nm=nm, tg=tg, gm=gm, win=win, bar=bar, worst=worst, wby=wby, chips=chip_l)
+
+    # 지금 내 픽 (골랐을 때만 보임)
+    my_box = tk.Frame(rec, bg=PANEL2)
+    my_row = make_row(my_box, PANEL2, "내 픽")
+    my_row["frame"].pack(fill="x", padx=14)
+    my_row["rank"].configure(fg=GOLD, font=F(9, True))
+
+    rec_rows = []
+    for i in range(10):
+        w = make_row(rec, PANEL, str(i + 1))
+        w["frame"].pack(fill="x", padx=14)
+        w["line"] = tk.Frame(rec, bg=PANEL2, height=1)
+        w["line"].pack(fill="x", padx=14)
+        rec_rows.append(w)
 
     empty_msg = label(rec, "", 10, SUB)
     empty_msg.pack(pady=8)
@@ -541,7 +601,46 @@ def run_gui(m, demo):
     def chip_color(v):
         return GREEN if v >= 0.3 else RED if v <= -0.3 else SUB
 
-    def draw_rows(rows, my_role):
+    def fill_row(w, r, my_role, ref, top=False):
+        w["av"].set(r["champ"], ring=GOLD if top else LINE)
+        w["nm"].configure(text=m.names.get(r["champ"], r["champ"]))
+        sub = f"{r['games']:,}판"
+        pts = mastery.get(r["champ"])
+        if pts:
+            sub += f" · 숙련 {pts / 10000:.1f}만" if pts >= 10000 else f" · 숙련 {pts:,}"
+        w["gm"].configure(text=sub)
+        rare = r.get("share", 1) < 0.2
+        w["tg"].configure(text=f"비주류 {r['share'] * 100:.0f}%" if rare else "")
+        col_ = BLUE if r["win"] >= ref + 0.01 else RED if r["win"] <= ref - 0.01 else TEXT
+        delta = r.get("delta")
+        w["win"].configure(text=f"{r['win'] * 100:.1f}%" + (f"  {delta * 100:+.1f}" if delta is not None else ""),
+                           fg=col_)
+        b = w["bar"]
+        b.delete("all")
+        b.create_rectangle(0, 0, 150, 5, fill=PANEL2 if w is not my_row else PANEL, outline="")
+        frac = min(1.0, max(0.02, (r["win"] - 0.30) / 0.40))
+        b.create_rectangle(0, 0, 150 * frac, 5, fill=col_ if col_ != TEXT else SUB, outline="")
+        b.create_line(75, 0, 75, 5, fill=BG)
+        wb = r.get("worst_by")
+        if wb:
+            w["worst"].configure(text=f"{r['worst'] * 100:.1f}%",
+                                 fg=RED if r["worst"] <= r["win"] - 0.01 else TEXT)
+            w["wby"].configure(text=f"vs {ROLE_KO[wb[0]]} {m.names[wb[1]]}")
+        else:
+            w["worst"].configure(text="—", fg=DIM)
+            w["wby"].configure(text="상대 픽 끝남" if r.get("no_open") else "")
+        for c, v in zip(w["chips"], r["parts"]):
+            c.configure(text=f"{v:+.1f}", fg=chip_color(v))
+        for c in w["chips"][len(r["parts"]):]:
+            c.configure(text="")
+
+    def draw_rows(rows, my_role, ref=0.5, mine=None):
+        if mine:
+            fill_row(my_row, mine, my_role, ref)
+            if not my_box.winfo_ismapped():
+                my_box.pack(fill="x", after=hdr_line)
+        else:
+            my_box.pack_forget()
         for i, w in enumerate(rec_rows):
             if i >= len(rows):
                 w["frame"].pack_forget()
@@ -550,31 +649,19 @@ def run_gui(m, demo):
             if not w["frame"].winfo_ismapped():
                 w["frame"].pack(fill="x", padx=14)
                 w["line"].pack(fill="x", padx=14)
-            r = rows[i]
             top = i == 0
             w["rank"].configure(fg=GOLD if top else SUB)
-            w["av"].set(r["champ"], ring=GOLD if top else LINE)
-            w["nm"].configure(text=m.names.get(r["champ"], r["champ"]))
-            w["gm"].configure(text=f"{ROLE_KO[my_role]} {r['games']:,}판")
-            w["win"].configure(text=f"{r['win'] * 100:.1f}%", fg=win_color(r["win"]))
-            b = w["bar"]
-            b.delete("all")
-            b.create_rectangle(0, 0, 150, 5, fill=PANEL2, outline="")
-            frac = min(1.0, max(0.02, (r["win"] - 0.40) / 0.20))
-            b.create_rectangle(0, 0, 150 * frac, 5, fill=win_color(r["win"]) if r["win"] != 0.5 else SUB, outline="")
-            b.create_line(75, 0, 75, 5, fill=BG)
-            w["worst"].configure(text=f"{r['worst'] * 100:.1f}%", fg=win_color(r["worst"]))
-            wb = r["worst_by"]
-            w["wby"].configure(text=f"vs {ROLE_KO[wb[0]]} {m.names[wb[1]]}" if wb else "")
-            for c, v in zip(w["chips"], r["parts"]):
-                c.configure(text=f"{v:+.1f}", fg=chip_color(v))
-        empty_msg.configure(text="" if rows else "추천할 챔피언이 없어요 (판수 부족 또는 모두 픽·밴됨)")
+            fill_row(w, rows[i], my_role, ref, top)
+        msg = "추천할 챔피언이 없어요 (판수 부족 또는 모두 픽·밴됨)"
+        if mine_var.get():
+            msg = f"숙련도 {MINE_POINTS:,}점 이상인 챔피언 중 추천할 게 없어요"
+        empty_msg.configure(text="" if rows else msg)
         if rows:
             empty_msg.pack_forget()
         elif not empty_msg.winfo_ismapped():
             empty_msg.pack(pady=8)
 
-    def draw_board(my_role, allies, enemies, bans, my_champ=None):
+    def draw_board(my_role, allies, enemies, bans, my_champ=None, role_p=None):
         for r, (f, rl, av, nm, tag) in enumerate(ally_rows):
             c = allies[r]
             mine = r == my_role
@@ -589,7 +676,8 @@ def run_gui(m, demo):
             c = enemies[r]
             av.set(c, ring=RED if c else LINE)
             nm.configure(text=m.names.get(c, "—") if c else "—", fg=TEXT if c else DIM)
-        enemy_note.configure(text="라인은 픽률로 추정" if any(enemies) else "")
+        enemy_note.configure(text=(f"라인 추정 · 이 배치일 확률 {role_p * 100:.0f}%" if role_p is not None else "라인은 픽률로 추정")
+                             if any(enemies) else "")
         for i, a in enumerate(ban_icons):
             c = bans[i] if i < len(bans) else None
             if c is None:
@@ -618,52 +706,90 @@ def run_gui(m, demo):
 
     state = {"key": None, "busy": False}
 
-    def show(key, rows, team_text, my_role, allies, enemies, bans, my_champ, head, cur, msub):
+    def show(key, res):
         if key != state["key"]:
             return
-        draw_match(cur, msub)
-        rec_title.configure(text=f"{ROLE_KO[my_role]} 추천")
-        rec_sub.configure(text=head)
-        draw_board(my_role, allies, enemies, bans, my_champ)
-        draw_rows(rows, my_role)
-        draw_summary(team_text)
+        draw_match(res["cur"], res["msub"])
+        rec_title.configure(text=f"{ROLE_KO[res['my_role']]} 추천")
+        rec_sub.configure(text=res["head"])
+        draw_board(res["my_role"], res["allies"], res["enemies"], res["bans"], res["my_champ"], res["role_p"])
+        draw_bans_suggest(res["bans_sug"])
+        draw_rows(res["rows"], res["my_role"], res["ref"], res["mine"])
+        draw_summary(res["team_text"])
 
     def compute(key, my_role, allies, enemy_ids, bans, head, my_champ=None, side=None):
         def work():
             try:
-                enemies = m.assign_roles(enemy_ids[:5], [None] * 5)
-                rows = m.recommend(my_role, allies, enemies, bans)
-                if side is not None:          # 진영 이점도 후보 승률에 똑같이 반영 (순위는 그대로)
-                    d = m.intercept if side == 0 else -m.intercept
-                    lg = lambda p: math.log(p / (1 - p))
-                    for r in rows:
-                        r["win"] = 1 / (1 + math.exp(-(lg(r["win"]) + d)))
-                        r["worst"] = 1 / (1 + math.exp(-(lg(r["worst"]) + d)))
-                team_text = ""
-                if rows:
-                    best = list(allies)
-                    best[my_role] = rows[0]["champ"]
-                    team_text = m.team_notes(best)
-                # 지금 조합의 예상 승률 (빈 칸은 픽률 평균, 진영을 알면 진영 이점 포함)
-                us = list(allies)
-                us[my_role] = my_champ
-                taken = {c for c in us + list(enemies) + list(bans) if c}
-                z = m.expected(us, enemies, taken)
-                if side is not None:
-                    z += m.intercept if side == 0 else -m.intercept
-                cur = 1 / (1 + math.exp(-z))
-                known = sum(1 for c in us if c) + sum(1 for c in enemies if c)
-                parts = [f"지금 조합 기준 ({known}/10명 확정, 나머지는 픽률 평균)"]
-                parts.append({0: "블루 진영", 1: "레드 진영"}.get(side, "진영 모름"))
-                if rows and not my_champ:
-                    parts.append(f"1순위 {m.names.get(rows[0]['champ'], '')} 고르면 {rows[0]['win'] * 100:.1f}%")
-                msub = "  ·  ".join(parts)
-                root.after(0, show, key, rows, team_text, my_role, allies, enemies, list(bans), my_champ, head, cur, msub)
+                res = calc(my_role, allies, enemy_ids, bans, head, my_champ, side)
+                root.after(0, show, key, res)
             finally:
                 state["busy"] = False
         state["busy"] = True
         state["key"] = key
         threading.Thread(target=work, daemon=True).start()
+
+    def calc(my_role, allies, enemy_ids, bans, head, my_champ, side):
+        lg = lambda p: math.log(p / (1 - p))
+        sg = lambda z: 1 / (1 + math.exp(-z))
+        d_side = 0.0 if side is None else (m.intercept if side == 0 else -m.intercept)
+        dist = m.assign_roles_dist(enemy_ids[:5], [None] * 5)   # 상대 라인 배치 후보 + 확률
+        agg = {}
+        cur_p, mine_p, mine_parts = 0.0, 0.0, [0.0, 0.0, 0.0]
+        for enemies_k, w in dist:
+            for r in m.recommend(my_role, allies, enemies_k, bans, top=None):
+                a = agg.setdefault(r["champ"], {"champ": r["champ"], "games": r["games"], "offrole": r["offrole"],
+                                                "share": r["share"], "win": 0.0, "worst": 0.0,
+                                                "parts": [0.0] * len(r["parts"]), "worst_by": r["worst_by"], "wb_w": -1})
+                a["win"] += w * sg(lg(r["win"]) + d_side)
+                a["worst"] += w * sg(lg(r["worst"]) + d_side)
+                a["parts"] = [x + w * y for x, y in zip(a["parts"], r["parts"])]
+                if w > a["wb_w"]:
+                    a["worst_by"], a["wb_w"] = r["worst_by"], w
+            us = list(allies)
+            us[my_role] = my_champ
+            taken = {c for c in us + list(enemies_k) + list(bans) if c}
+            zt = sum(m.expected_team(us, enemies_k, taken, seed=sd) for sd in range(5)) / 5   # 표본 잡음 줄이기
+            cur_p += w * sg(m.expected_pairs(us, enemies_k, taken) + zt + d_side)
+            if my_champ:
+                mine_p = cur_p
+                bd = m.breakdown(us, enemies_k, my_role)
+                mine_parts = [x + w * y for x, y in zip(mine_parts, bd)]
+        open_enemy = len([c for c in enemy_ids if c]) < 5
+        rows = sorted(agg.values(), key=lambda x: -x["win"])
+        for r in rows:
+            r["parts"] = [round(x, 1) for x in r["parts"]]
+            r["no_open"] = not open_enemy
+            if not open_enemy:
+                r["worst_by"] = None
+        if mine_var.get() and mastery:
+            rows = [r for r in rows if mastery.get(r["champ"], 0) >= MINE_POINTS]
+        rows = rows[:9 if my_champ else 10]       # 내 픽 줄이 보이면 한 줄 줄임
+        enemies = dist[0][0]
+        mine = None
+        if my_champ:
+            mine = {"champ": my_champ, "games": m.games.get(my_role, {}).get(my_champ, 0), "offrole": 0.0,
+                    "share": m.role_share(my_role, my_champ), "win": mine_p, "worst": mine_p, "worst_by": None,
+                    "parts": [round(x, 1) for x in mine_parts], "no_open": not open_enemy}
+            for r in rows:
+                r["delta"] = r["win"] - mine_p
+        ref = mine_p if my_champ else cur_p
+        team_text = ""
+        if rows:
+            best = list(allies)
+            best[my_role] = rows[0]["champ"]
+            team_text = m.team_notes(best)
+        known = sum(1 for c in list(allies) + [my_champ] if c) + len([c for c in enemy_ids if c])
+        parts = [f"지금 조합 기준 ({known}/10명 확정, 나머지는 픽률 평균)"]
+        parts.append({0: "블루 진영", 1: "레드 진영"}.get(side, "진영 모름"))
+        if rows and not my_champ:
+            parts.append(f"1순위 {m.names.get(rows[0]['champ'], '')} 고르면 {rows[0]['win'] * 100:.1f}%")
+        if rows and my_champ and rows[0]["champ"] != my_champ:
+            parts.append(f"{m.names.get(rows[0]['champ'], '')}(으)로 바꾸면 {rows[0]['delta'] * 100:+.1f}%p")
+        taken_all = {c for c in list(allies) + list(enemy_ids) + list(bans) + [my_champ] if c}
+        bans_sug = m.ban_suggestions(my_role, taken_all) if not any(enemy_ids) else []
+        return {"cur": cur_p, "msub": "  ·  ".join(parts), "my_role": my_role, "allies": list(allies),
+                "enemies": enemies, "bans": list(bans), "my_champ": my_champ, "role_p": dist[0][1] if any(enemy_ids) else None,
+                "rows": rows, "ref": ref, "mine": mine, "team_text": team_text, "head": head, "bans_sug": bans_sug}
 
     def parse_ids(text, allow_empty):
         out, errs = [], []
@@ -703,6 +829,16 @@ def run_gui(m, demo):
                 else:
                     s, st = client.get("/lol-champ-select/v1/session")
                 last["session"], last["status"] = s, st
+                if st != "롤 클라이언트를 못 찾았어요 (꺼져 있으면 수동 모드로 쓰세요)" and not mastery and not demo \
+                        and time.time() - last.get("mastery_try", 0) > 60:
+                    last["mastery_try"] = time.time()
+                    for path in ("/lol-champion-mastery/v1/local-player/champion-mastery",):
+                        data, ok = client.get(path)
+                        if ok == "ok" and isinstance(data, list):
+                            for e in data:
+                                if e.get("championId"):
+                                    mastery[int(e["championId"])] = int(e.get("championPoints", 0))
+                            break
                 if s is None and not st.startswith("픽창 대기"):
                     time.sleep(4)                 # 클라이언트가 꺼져 있으면 5초마다만 찾기
             time.sleep(1)
@@ -718,7 +854,10 @@ def run_gui(m, demo):
         s, st = last["session"], last["status"]
         if auto_var.get() and st:
             if s is None:
-                set_status(st, GOLD if st.startswith("픽창 대기") else DIM)
+                if st.startswith("픽창 대기") and state["key"] and state["key"][0] == "auto":
+                    set_status("픽창 끝남 — 마지막 픽창 결과를 보여 주는 중", GOLD)
+                else:
+                    set_status(st, GOLD if st.startswith("픽창 대기") else DIM)
             else:
                 my_role, allies, unplaced, my_champ, enemy_ids, bans = parse_session(s)
                 if my_role is None:
@@ -746,9 +885,12 @@ def run_gui(m, demo):
 
     paint_roles()
     paint_auto()
+    paint_mine()
     draw_board(2, [None] * 5, [None] * 5, [])
     draw_rows([], 2)
     empty_msg.configure(text="픽창에 들어가면 자동으로 추천이 떠요")
+    if demo:
+        mastery.update({c: (i * 37919) % 400000 for i, c in enumerate(m.names)})
     threading.Thread(target=poll, daemon=True).start()
     root.after(300, tick)
     if not demo:
@@ -802,6 +944,13 @@ def main():
         return
     m = Model(path)
     demo = "--demo" in sys.argv
+    if "--demo-ban" in sys.argv:
+        DEMO["theirTeam"] = [{"championId": 0}] * 5
+        DEMO["myTeam"][0]["championId"] = 0
+    if "--demo-picked" in sys.argv:
+        DEMO["myTeam"][3]["championId"] = 222
+        DEMO["myTeam"][4]["championId"] = 412
+        DEMO["theirTeam"] = [{"championId": c} for c in (238, 64, 145, 24, 89)]
     try:
         import tkinter  # noqa: F401
     except ImportError:
