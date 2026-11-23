@@ -59,6 +59,7 @@ class Model:
             self.attr = {int(c): dict(zip(t["attr_keys"], v)) for c, v in t["attr"].items()}
             parse = lambda d: {tuple(map(int, k.split(","))): v for k, v in d.items()}
             self.magic, self.amt, self.scaling = parse(t["magic"]), parse(t["amt"]), parse(t["scaling"])
+        self.keys = {int(k): v for k, v in m.get("keys", {}).items()}  # 영문 키 (아이콘 파일 이름)
         self.lookup = {}
         for cid, name in self.names.items():
             self.lookup[norm(name)] = cid
