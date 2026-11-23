@@ -9,6 +9,7 @@
 """
 import base64
 import json
+import math
 import os
 import re
 import ssl
@@ -118,6 +119,14 @@ def parse_session(s):
             if a.get("type") == "ban" and a.get("completed") and a.get("championId"):
                 bans.add(a["championId"])
     return my_role, allies, unplaced, my_champ, enemies, sorted(bans)
+
+
+def my_side(s):
+    """내 진영: 0 블루, 1 레드, None 모름 (픽창 칸 번호 0~4 = 블루)."""
+    me = s.get("localPlayerCellId")
+    if not isinstance(me, int) or me < 0:
+        return None
+    return 0 if me < 5 else 1
 
 
 DEMO = {
@@ -246,7 +255,7 @@ def run_gui(m, demo):
     root = tk.Tk()
     root.title("LoL Draft — 밴픽 추천")
     root.configure(bg=BG)
-    root.geometry("940x900")
+    root.geometry("940x1000")
     root.minsize(900, 640)
     root.attributes("-topmost", True)
     icons = Icons(root, m.keys)
@@ -370,6 +379,40 @@ def run_gui(m, demo):
             manual_box.pack_forget()
 
     body.pack(fill="both", expand=True, padx=18)
+
+    # ---------- 예상 승률 (우리 팀 vs 상대 팀)
+    match = tk.Frame(body, bg=PANEL, highlightthickness=1, highlightbackground=LINE)
+    match.pack(fill="x", pady=(0, 10))
+    mrow = tk.Frame(match, bg=PANEL)
+    mrow.pack(fill="x", padx=14, pady=(10, 2))
+    label(mrow, "우리 팀", 10, BLUE, True).pack(side="left")
+    us_pct = label(mrow, "—", 20, BLUE, True)
+    us_pct.pack(side="left", padx=(8, 0))
+    label(mrow, "상대 팀", 10, RED, True).pack(side="right")
+    them_pct = label(mrow, "—", 20, RED, True)
+    them_pct.pack(side="right", padx=(0, 8))
+    mid = label(mrow, "예상 승률", 9, SUB, True)
+    mid.pack(expand=True)
+    split = tk.Canvas(match, height=8, bg=PANEL, highlightthickness=0)
+    split.pack(fill="x", padx=14)
+    match_sub = label(match, "", 8, DIM)
+    match_sub.pack(fill="x", padx=14, pady=(4, 8))
+
+    def draw_match(p, sub):
+        split.delete("all")
+        w = max(split.winfo_width(), 200)
+        if p is None:
+            us_pct.configure(text="—")
+            them_pct.configure(text="—")
+            split.create_rectangle(0, 0, w, 8, fill=PANEL2, outline="")
+        else:
+            us_pct.configure(text=f"{p * 100:.1f}%")
+            them_pct.configure(text=f"{(1 - p) * 100:.1f}%")
+            x = w * p
+            split.create_rectangle(0, 0, x, 8, fill=BLUE, outline="")
+            split.create_rectangle(x, 0, w, 8, fill=RED, outline="")
+            split.create_line(w / 2, 0, w / 2, 8, fill=BG)
+        match_sub.configure(text=sub)
 
     # ---------- 양 팀 보드
     board = tk.Frame(body, bg=BG)
@@ -575,26 +618,47 @@ def run_gui(m, demo):
 
     state = {"key": None, "busy": False}
 
-    def show(key, rows, team_text, my_role, allies, enemies, bans, my_champ, head):
+    def show(key, rows, team_text, my_role, allies, enemies, bans, my_champ, head, cur, msub):
         if key != state["key"]:
             return
+        draw_match(cur, msub)
         rec_title.configure(text=f"{ROLE_KO[my_role]} 추천")
         rec_sub.configure(text=head)
         draw_board(my_role, allies, enemies, bans, my_champ)
         draw_rows(rows, my_role)
         draw_summary(team_text)
 
-    def compute(key, my_role, allies, enemy_ids, bans, head, my_champ=None):
+    def compute(key, my_role, allies, enemy_ids, bans, head, my_champ=None, side=None):
         def work():
             try:
                 enemies = m.assign_roles(enemy_ids[:5], [None] * 5)
                 rows = m.recommend(my_role, allies, enemies, bans)
+                if side is not None:          # 진영 이점도 후보 승률에 똑같이 반영 (순위는 그대로)
+                    d = m.intercept if side == 0 else -m.intercept
+                    lg = lambda p: math.log(p / (1 - p))
+                    for r in rows:
+                        r["win"] = 1 / (1 + math.exp(-(lg(r["win"]) + d)))
+                        r["worst"] = 1 / (1 + math.exp(-(lg(r["worst"]) + d)))
                 team_text = ""
                 if rows:
                     best = list(allies)
                     best[my_role] = rows[0]["champ"]
                     team_text = m.team_notes(best)
-                root.after(0, show, key, rows, team_text, my_role, allies, enemies, list(bans), my_champ, head)
+                # 지금 조합의 예상 승률 (빈 칸은 픽률 평균, 진영을 알면 진영 이점 포함)
+                us = list(allies)
+                us[my_role] = my_champ
+                taken = {c for c in us + list(enemies) + list(bans) if c}
+                z = m.expected(us, enemies, taken)
+                if side is not None:
+                    z += m.intercept if side == 0 else -m.intercept
+                cur = 1 / (1 + math.exp(-z))
+                known = sum(1 for c in us if c) + sum(1 for c in enemies if c)
+                parts = [f"지금 조합 기준 ({known}/10명 확정, 나머지는 픽률 평균)"]
+                parts.append({0: "블루 진영", 1: "레드 진영"}.get(side, "진영 모름"))
+                if rows and not my_champ:
+                    parts.append(f"1순위 {m.names.get(rows[0]['champ'], '')} 고르면 {rows[0]['win'] * 100:.1f}%")
+                msub = "  ·  ".join(parts)
+                root.after(0, show, key, rows, team_text, my_role, allies, enemies, list(bans), my_champ, head, cur, msub)
             finally:
                 state["busy"] = False
         state["busy"] = True
@@ -672,10 +736,10 @@ def run_gui(m, demo):
                 ally_var.set(" ".join(m.names[c].replace(" ", "") if c else "-" for c in allies))
                 enemy_var.set(names(enemy_ids))
                 ban_var.set(names(bans))
-                key = ("auto", my_role, tuple(allies), tuple(enemy_ids), tuple(bans), my_champ)
+                key = ("auto", my_role, tuple(allies), tuple(enemy_ids), tuple(bans), my_champ, my_side(s))
                 if key != state["key"] and not state["busy"]:
                     head = f"지금 고른 챔피언: {m.names.get(my_champ, my_champ)}" if my_champ else "픽창 기준"
-                    compute(key, my_role, allies, enemy_ids, bans, head, my_champ)
+                    compute(key, my_role, allies, enemy_ids, bans, head, my_champ, my_side(s))
         elif not auto_var.get():
             set_status("수동 모드 — 아래 칸에 입력하고 '추천 받기'", BLUE)
         root.after(500, tick)
