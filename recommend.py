@@ -62,11 +62,42 @@ class Model:
             parse = lambda d: {tuple(map(int, k.split(","))): v for k, v in d.items()}
             self.magic, self.amt, self.scaling = parse(t["magic"]), parse(t["amt"]), parse(t["scaling"])
         self.keys = {int(k): v for k, v in m.get("keys", {}).items()}  # 영문 키 (아이콘 파일 이름)
+        # 조합 적합도 기준값: 그 챔피언이 '평균적인 판'에서 받는 상성·듀오·팀 조합 몫 (로짓)
+        self.fit_base = {(int(r), int(c)): v for r, d in m.get("fit_base", {}).items() for c, v in d.items()}
         self.intercept = float(m.get("intercept", 0.0))  # 블루 진영 이점 (로짓)
         self.lookup = {}
         for cid, name in self.names.items():
             self.lookup[norm(name)] = cid
             self.lookup[norm(m["keys"][str(cid)])] = cid
+
+    def compute_fit_base(self, drafts, per_role=300, seed=0):
+        """실제 경기 조합(drafts: (블루 5명, 레드 5명))에 후보를 넣어 본 상성·듀오·팀 조합 몫의 평균.
+        팀 조합 특성 중엔 '챔피언 고유값'처럼 작동하는 것(후반형, 마법 피해 비율)이 있어서,
+        이걸 빼야 '이 판에서 평소보다 얼마나 맞는지'만 남는다."""
+        rng = random.Random(seed)
+        out = {}
+        for role in range(5):
+            cands = [c for c, n in self.games.get(role, {}).items() if n >= self.min_games]
+            sums = {c: [0.0, 0] for c in cands}
+            for blue, red in rng.sample(drafts, min(per_role, len(drafts))):
+                us, them = list(blue), list(red)
+                base_team = set(us + them)
+                for c in cands:
+                    if c in base_team:
+                        continue
+                    us[role] = c
+                    v = self.pair_terms(us, them) - self.champ.get((role, c), 0.0)
+                    if self.team:
+                        v += self.team_score(us, them)
+                    sums[c][0] += v
+                    sums[c][1] += 1
+            out[role] = {c: s / n for c, (s, n) in sums.items() if n}
+        # 후보들 평균은 0으로 (상대적인 값만 의미 있음)
+        for role, d in out.items():
+            mu = sum(d.values()) / max(1, len(d))
+            out[role] = {c: v - mu for c, v in d.items()}
+        self.fit_base = {(r, c): v for r, d in out.items() for c, v in d.items()}
+        return {str(r): {str(c): round(v, 5) for c, v in d.items()} for r, d in out.items()}
 
     # ---------- 이름 찾기
     def find(self, text):
@@ -335,7 +366,9 @@ class Model:
             rows.append({"champ": c, "win": sigmoid(exp), "worst": sigmoid(exp + worst_delta), "worst_by": worst_by,
                          "offrole": round(25 * off, 1) if off else 0.0, "share": self.role_share(my_role, c),
                          "games": self.games[my_role].get(c, 0), "parts": self.breakdown(us, enemies, my_role),
-                         "team": team})
+                         "team": team,
+                         # 조합 적합도 (로짓): 챔피언 자체 강함을 뺀, 이 판의 상성·듀오·팀 조합 몫
+                         "fit": exp - self.champ.get((my_role, c), 0.0) - off - self.fit_base.get((my_role, c), 0.0)})
         if rows:
             avg_team = sum(r["team"] for r in rows) / len(rows)
             for r in rows:

@@ -510,6 +510,23 @@ def run_gui(m, demo):
         state["key"] = None                     # 다시 계산
 
     mine_btn.bind("<Button-1>", toggle_mine)
+
+    # 정렬: 승률순(챔피언 강함 포함) / 조합순(이 판 조합에 얼마나 맞는지만)
+    fit_var = tk.BooleanVar(value=False)
+    fit_btn = tk.Label(rh, font=F(8, True), padx=8, pady=3, cursor="hand2")
+    fit_btn.pack(side="right", padx=(0, 6))
+
+    def paint_fit():
+        on = fit_var.get()
+        fit_btn.configure(text="정렬: 조합순" if on else "정렬: 승률순", bg=BLUE if on else PANEL2,
+                          fg="#06121f" if on else SUB)
+
+    def toggle_fit(_=None):
+        fit_var.set(not fit_var.get())
+        paint_fit()
+        state["key"] = None                     # 다시 계산
+
+    fit_btn.bind("<Button-1>", toggle_fit)
     mastery = {}                                # 챔피언 -> 숙련도 점수 (롤 클라이언트에서)
     MINE_POINTS = 10000
 
@@ -605,6 +622,8 @@ def run_gui(m, demo):
         w["av"].set(r["champ"], ring=GOLD if top else LINE)
         w["nm"].configure(text=m.names.get(r["champ"], r["champ"]))
         sub = f"{r['games']:,}판"
+        if r.get("fit_pp") is not None:
+            sub += f" · 조합 {r['fit_pp']:+.1f}"
         pts = mastery.get(r["champ"])
         if pts:
             sub += f" · 숙련 {pts / 10000:.1f}만" if pts >= 10000 else f" · 숙련 {pts:,}"
@@ -739,7 +758,9 @@ def run_gui(m, demo):
             for r in m.recommend(my_role, allies, enemies_k, bans, top=None):
                 a = agg.setdefault(r["champ"], {"champ": r["champ"], "games": r["games"], "offrole": r["offrole"],
                                                 "share": r["share"], "win": 0.0, "worst": 0.0,
-                                                "parts": [0.0] * len(r["parts"]), "worst_by": r["worst_by"], "wb_w": -1})
+                                                "parts": [0.0] * len(r["parts"]), "worst_by": r["worst_by"], "wb_w": -1,
+                                                "fit": 0.0})
+                a["fit"] += w * r["fit"]
                 a["win"] += w * sg(lg(r["win"]) + d_side)
                 a["worst"] += w * sg(lg(r["worst"]) + d_side)
                 a["parts"] = [x + w * y for x, y in zip(a["parts"], r["parts"])]
@@ -755,7 +776,11 @@ def run_gui(m, demo):
                 bd = m.breakdown(us, enemies_k, my_role)
                 mine_parts = [x + w * y for x, y in zip(mine_parts, bd)]
         open_enemy = len([c for c in enemy_ids if c]) < 5
-        rows = sorted(agg.values(), key=lambda x: -x["win"])
+        if agg:  # 조합 적합도: 후보 평균 대비 %p (챔피언 자체 강함 제외)
+            avg_fit = sum(a["fit"] for a in agg.values()) / len(agg)
+            for a in agg.values():
+                a["fit_pp"] = round(25 * (a["fit"] - avg_fit), 1)
+        rows = sorted(agg.values(), key=(lambda x: -x["fit"]) if fit_var.get() else (lambda x: -x["win"]))
         for r in rows:
             r["parts"] = [round(x, 1) for x in r["parts"]]
             r["no_open"] = not open_enemy
@@ -769,7 +794,8 @@ def run_gui(m, demo):
         if my_champ:
             mine = {"champ": my_champ, "games": m.games.get(my_role, {}).get(my_champ, 0), "offrole": 0.0,
                     "share": m.role_share(my_role, my_champ), "win": mine_p, "worst": mine_p, "worst_by": None,
-                    "parts": [round(x, 1) for x in mine_parts], "no_open": not open_enemy}
+                    "parts": [round(x, 1) for x in mine_parts], "no_open": not open_enemy,
+                    "fit_pp": agg.get(my_champ, {}).get("fit_pp")}
             for r in rows:
                 r["delta"] = r["win"] - mine_p
         ref = mine_p if my_champ else cur_p
@@ -781,6 +807,8 @@ def run_gui(m, demo):
         known = sum(1 for c in list(allies) + [my_champ] if c) + len([c for c in enemy_ids if c])
         parts = [f"지금 조합 기준 ({known}/10명 확정, 나머지는 픽률 평균)"]
         parts.append({0: "블루 진영", 1: "레드 진영"}.get(side, "진영 모름"))
+        if fit_var.get():
+            parts.append("조합순 정렬 (챔피언 자체 강함 제외)")
         if rows and not my_champ:
             parts.append(f"1순위 {m.names.get(rows[0]['champ'], '')} 고르면 {rows[0]['win'] * 100:.1f}%")
         if rows and my_champ and rows[0]["champ"] != my_champ:
@@ -886,6 +914,7 @@ def run_gui(m, demo):
     paint_roles()
     paint_auto()
     paint_mine()
+    paint_fit()
     draw_board(2, [None] * 5, [None] * 5, [])
     draw_rows([], 2)
     empty_msg.configure(text="픽창에 들어가면 자동으로 추천이 떠요")
